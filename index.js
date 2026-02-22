@@ -20,7 +20,6 @@ server.tool(
   'get_11st_orders',
   'PostgreSQL DB에서 11번가 채널의 최근 주문 내역을 가져옵니다.',
   {
-    // 🚨 바로 이 부분의 단어를 describe 로 수정했습니다!
     limit: z.number().default(5).describe('가져올 주문 건수 (기본 5건)'),
   },
   async ({ limit }) => {
@@ -38,19 +37,41 @@ server.tool(
   }
 );
 
-let transport;
+// 🚨 업그레이드 포인트: 여러 연결을 기억할 수 있는 '명부(Map)'를 만듭니다.
+const transports = new Map();
 
 app.get('/sse', async (req, res) => {
-  transport = new SSEServerTransport('/sse', res); 
+  // n8n이 처음 인사하러 오면 고유한 '출입증 번호(세션 ID)'를 발급합니다.
+  const sessionId = Math.random().toString(36).substring(2, 15);
+
+  // n8n에게 "앞으로 데이터는 /messages?sessionId=네출입증번호 여기로 보내!" 라고 알려줍니다.
+  const transport = new SSEServerTransport(`/messages?sessionId=${sessionId}`, res);
+  
+  // 명부에 출입증 번호와 통로를 기록해 둡니다.
+  transports.set(sessionId, transport);
   await server.connect(transport);
-  console.log('n8n과 SSE 연결이 성공했습니다!');
+  
+  console.log(`[연결 성공] n8n이 접속했습니다. (출입증: ${sessionId})`);
+
+  // n8n이 연결을 끊으면 명부에서 지웁니다.
+  req.on('close', () => {
+    transports.delete(sessionId);
+    console.log(`[연결 종료] 출입증 ${sessionId} 폐기됨.`);
+  });
 });
 
-app.post('/sse', async (req, res) => {
+// n8n이 데이터를 밀어넣는 전용 문입니다.
+app.post('/messages', async (req, res) => {
+  // n8n이 들고 온 출입증 번호를 확인합니다.
+  const sessionId = req.query.sessionId;
+  const transport = transports.get(sessionId);
+
+  // 명부에 있는 정상적인 통로라면 데이터를 받아줍니다.
   if (transport) {
     await transport.handlePostMessage(req, res);
   } else {
-    res.status(500).send('통로가 아직 열리지 않았습니다.');
+    // 서버가 재시작되어 명부가 지워졌는데 n8n이 옛날 출입증을 들고 오면 다시 연결하라고 알려줍니다.
+    res.status(404).send('연결이 끊어졌습니다. n8n에서 다시 접속해주세요.');
   }
 });
 
