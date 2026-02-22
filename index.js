@@ -40,7 +40,7 @@ app.get("/", (req, res) => res.status(200).send("ok"));
 app.get("/health", (req, res) => res.status(200).send("ok"));
 
 /** ---------------------------
- *  DB (네 기존 그대로)
+ * DB 연결 설정
  * -------------------------- */
 const { Pool } = pg;
 const pool = new Pool({
@@ -48,8 +48,7 @@ const pool = new Pool({
 });
 
 /** ---------------------------
- *  MCP 서버 생성 함수
- *  (세션마다 서버+transport를 붙이기 위해 함수로 만듦)
+ * MCP 서버 생성 함수
  * -------------------------- */
 function createMcpServer() {
   const server = new McpServer({
@@ -57,17 +56,19 @@ function createMcpServer() {
     version: "1.0.0",
   });
 
-  // ✅ 네가 만들었던 Tool 그대로
+  // ✅ D.CURVIN 11번가 재고 조회용 Tool
   server.tool(
     "get_11st_orders",
-    "PostgreSQL DB에서 11번가 채널의 최근 주문 내역을 가져옵니다.",
+    "PostgreSQL DB에서 11번가 채널(inventory_11st 테이블)의 최근 재고 및 수집 내역을 가져옵니다.",
     {
-      limit: z.number().default(5).describe("가져올 주문 건수 (기본 5건)"),
+      limit: z.number().default(5).describe("가져올 데이터 건수 (기본 5건)"),
     },
     async ({ limit }) => {
       try {
-        const query = "SELECT * FROM orders WHERE channel = $1 LIMIT $2";
-        const result = await pool.query(query, ["11st", limit]);
+        // 실제 데이터가 들어있는 inventory_11st 테이블을 수집 날짜/시간 역순으로 조회합니다.
+        const query = "SELECT * FROM inventory_11st ORDER BY fetched_date DESC, fetched_time DESC LIMIT $1";
+        const result = await pool.query(query, [limit]);
+        
         return {
           content: [{ type: "text", text: JSON.stringify(result.rows, null, 2) }],
         };
@@ -88,19 +89,12 @@ function createMcpServer() {
 }
 
 /** ---------------------------
- *  ✅ Streamable HTTP 세션 관리
- *  세션ID는 쿼리스트링이 아니라 "Mcp-Session-Id" 헤더로 옴
+ * ✅ Streamable HTTP 세션 관리
  * -------------------------- */
 const transports = {}; // { [sessionId]: StreamableHTTPServerTransport }
 
-/**
- * n8n은 처음에 POST로 initialize 요청을 보냄.
- * - session header가 없고
- * - body가 initialize 요청이면
- *   => 서버가 새 세션을 만들고 transport 생성
- */
 async function mcpPostHandler(req, res) {
-  const sessionIdFromHeader = req.headers["mcp-session-id"]; // <-- 핵심(쿼리스트링 아님)
+  const sessionIdFromHeader = req.headers["mcp-session-id"]; 
   let transport;
 
   // 1) 이미 세션이 있으면 기존 transport 사용
@@ -127,7 +121,7 @@ async function mcpPostHandler(req, res) {
     const server = createMcpServer();
     await server.connect(transport);
   } else {
-    // 세션도 없고 initialize도 아니면 클라이언트가 규칙을 안 지킨 것
+    // 세션도 없고 initialize도 아니면 에러 반환
     res.status(400).json({
       jsonrpc: "2.0",
       error: {
@@ -143,10 +137,6 @@ async function mcpPostHandler(req, res) {
   await transport.handleRequest(req, res, req.body);
 }
 
-/**
- * Streamable HTTP는 POST 말고도
- * GET/DELETE로 세션 유지/정리 요청이 올 수 있음
- */
 async function handleSessionRequest(req, res) {
   const sessionId = req.headers["mcp-session-id"];
   if (!sessionId || !transports[sessionId]) {
@@ -159,7 +149,6 @@ async function handleSessionRequest(req, res) {
 
 /**
  * ✅ n8n용 MCP Endpoint (중요)
- * - n8n MCP Client Tool의 Endpoint = https://도메인/mcp
  */
 app.post("/mcp", mcpPostHandler);
 app.get("/mcp", handleSessionRequest);
@@ -167,8 +156,6 @@ app.delete("/mcp", handleSessionRequest);
 
 /** ----------------------------------------
  * (선택) 기존 SSE 테스트용 엔드포인트 유지
- * 브라우저에서 /sse로 접속하면 event endpoint가 뜸
- * n8n은 이걸 안 씀
  * ---------------------------------------- */
 const sseTransports = new Map();
 
