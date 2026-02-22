@@ -20,7 +20,8 @@ server.tool(
   'get_11st_orders',
   'PostgreSQL DB에서 11번가 채널의 최근 주문 내역을 가져옵니다.',
   {
-    limit: z.number().default(5).description('가져올 주문 건수 (기본 5건)'),
+    // 🚨 바로 이 부분의 단어를 describe 로 수정했습니다!
+    limit: z.number().default(5).describe('가져올 주문 건수 (기본 5건)'),
   },
   async ({ limit }) => {
     try {
@@ -39,14 +40,12 @@ server.tool(
 
 let transport;
 
-// 🚨 변경된 부분 1: n8n에게 "앞으로 데이터도 /sse 로 보내라"고 명시합니다.
 app.get('/sse', async (req, res) => {
   transport = new SSEServerTransport('/sse', res); 
   await server.connect(transport);
   console.log('n8n과 SSE 연결이 성공했습니다!');
 });
 
-// 🚨 변경된 부분 2: n8n이 고집 부리며 데이터를 밀어넣는 /sse 문을 아예 열어줍니다.
 app.post('/sse', async (req, res) => {
   if (transport) {
     await transport.handlePostMessage(req, res);
