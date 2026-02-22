@@ -39,21 +39,18 @@ server.tool(
 
 let globalTransport = null;
 
-// n8n이 처음 통신을 시도할 때 (GET 요청)
-app.get('/sse', async (req, res) => {
-  // n8n에게 "앞으로 데이터도 똑같이 /sse 로 보내!" 라고 알려줍니다.
-  globalTransport = new SSEServerTransport('/sse', res); 
+// 🚨 핵심: n8n의 캐시(기억)를 깨기 위해 통로 이름을 /mcp 로 변경
+app.get('/mcp', async (req, res) => {
+  globalTransport = new SSEServerTransport('/mcp', res);
   await server.connect(globalTransport);
-  console.log('✅ n8n과 SSE 연결이 성공했습니다!');
+  console.log('✅ n8n과 새로운 통로(/mcp)로 완벽하게 연결되었습니다!');
 });
 
-// n8n이 데이터를 밀어넣을 때 (POST 요청)
-app.post('/sse', async (req, res) => {
+app.post('/mcp', async (req, res) => {
   if (globalTransport) {
     await globalTransport.handlePostMessage(req, res);
   } else {
-    console.log('⚠️ n8n이 끊어진 통로로 데이터를 보냈습니다.');
-    res.status(400).send('서버가 재시작되었습니다. n8n 워크플로우를 새로고침 해주세요.');
+    res.status(400).send('통로가 끊어졌습니다.');
   }
 });
 
