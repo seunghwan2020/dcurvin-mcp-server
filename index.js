@@ -37,24 +37,41 @@ server.tool(
   }
 );
 
-let activeTransport = null;
+// 🚨 연결된 통로들을 안전하게 보관하는 명부
+const transports = new Map();
 
-// 🚨 핵심 1: 어떤 주소로 들어오든 전부 찰떡같이 받아주는 '만능 문(/*)'
-app.get('/*', async (req, res) => {
-  // 🚨 핵심 2: Railway 클라우드 환경에서 데이터가 막히지 않게 버퍼링 끄기
+// 1. n8n이 처음 인사(GET)하러 오는 문
+app.get('/mcp', async (req, res) => {
+  console.log('✅ n8n GET 요청 수신!');
+  // Railway 클라우드 환경에서 데이터가 막히지 않게 필수 설정
   res.setHeader('X-Accel-Buffering', 'no');
+
+  // n8n이 접속할 때마다 고유한 출입증(세션 ID) 발급
+  const sessionId = Math.random().toString(36).substring(2);
   
-  // n8n이 들어온 그 주소 그대로 통로를 열어줍니다.
-  activeTransport = new SSEServerTransport(req.path, res);
-  await server.connect(activeTransport);
-  console.log(`✅ n8n 연결 성공 (접속 경로: ${req.path})`);
+  // n8n에게 "앞으로 데이터는 /mcp?sessionId=출입증번호 여기로 보내!" 라고 지시합니다.
+  const transport = new SSEServerTransport(`/mcp?sessionId=${sessionId}`, res);
+  
+  transports.set(sessionId, transport);
+  await server.connect(transport);
+  
+  req.on('close', () => {
+    transports.delete(sessionId);
+    console.log(`[연결 종료] 세션 ${sessionId} 폐기`);
+  });
 });
 
-app.post('/*', async (req, res) => {
-  if (activeTransport) {
-    await activeTransport.handlePostMessage(req, res);
+// 2. n8n이 데이터를 밀어넣는(POST) 문 (주소를 완전히 똑같이 맞췄습니다)
+app.post('/mcp', async (req, res) => {
+  console.log('✅ n8n POST 요청 수신!');
+  const sessionId = req.query.sessionId;
+  const transport = transports.get(sessionId);
+
+  if (transport) {
+    await transport.handlePostMessage(req, res);
   } else {
-    res.status(400).send('재연결 필요');
+    // 서버가 재시작되어 명부가 없으면 n8n에게 다시 접속하라고 알려줍니다.
+    res.status(400).send('세션이 만료되었습니다. n8n 워크플로우를 새로고침 하세요.');
   }
 });
 
