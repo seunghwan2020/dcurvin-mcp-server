@@ -39,20 +39,22 @@ server.tool(
 
 let activeTransport = null;
 
-// n8n이 처음 인사하러 오는 정문 (새로운 이름으로 파서 뇌를 리셋시킵니다)
-app.get('/mcp', async (req, res) => {
-  console.log('✅ n8n 연결 요청(GET) 들어옴!');
-  // n8n에게 "앞으로 데이터는 /messages 로 보내라"고 지시서(Endpoint)를 내립니다.
-  activeTransport = new SSEServerTransport('/messages', res);
+// 🚨 핵심 1: 어떤 주소로 들어오든 전부 찰떡같이 받아주는 '만능 문(/*)'
+app.get('/*', async (req, res) => {
+  // 🚨 핵심 2: Railway 클라우드 환경에서 데이터가 막히지 않게 버퍼링 끄기
+  res.setHeader('X-Accel-Buffering', 'no');
+  
+  // n8n이 들어온 그 주소 그대로 통로를 열어줍니다.
+  activeTransport = new SSEServerTransport(req.path, res);
   await server.connect(activeTransport);
+  console.log(`✅ n8n 연결 성공 (접속 경로: ${req.path})`);
 });
 
-// n8n이 지시를 받고 데이터를 보내는 전용 뒷문
-app.post('/messages', async (req, res) => {
+app.post('/*', async (req, res) => {
   if (activeTransport) {
     await activeTransport.handlePostMessage(req, res);
   } else {
-    res.status(400).send('연결이 없습니다.');
+    res.status(400).send('재연결 필요');
   }
 });
 
