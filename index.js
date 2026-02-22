@@ -22,7 +22,7 @@ app.use(
 app.get("/", (req, res) => res.status(200).send("ok"));
 
 /** ---------------------------
- * 1. DB 연결 설정 및 디버깅 로그
+ * 1. DB 연결 설정
  * -------------------------- */
 const { Pool } = pg;
 const pool = new Pool({
@@ -30,80 +30,77 @@ const pool = new Pool({
 });
 
 pool.query('SELECT NOW()', (err, res) => {
-  if (err) console.error('❌ [디버깅] DB 연결 실패:', err.message);
-  else console.log('✅ [디버깅] PostgreSQL DB 연결 성공! (연결 시각:', res.rows[0].now, ')');
+  if (err) console.error('❌ [DB 에러] 연결 실패:', err.message);
+  else console.log('✅ [DB 성공] PostgreSQL 연결 완료 (', res.rows[0].now, ')');
 });
 
 /** ---------------------------
- * 2. 만능 MCP 서버 도구 (SELECT/WITH 지원)
+ * 2. 만능 MCP 서버 도구 (매핑 최적화)
  * -------------------------- */
 function createMcpServer() {
   const server = new McpServer({
     name: "dcurvin-master-agent",
-    version: "2.2.0",
+    version: "2.4.0",
   });
 
   // [도구 1] 테이블 목록 조회
   server.tool(
     "list_tables",
-    "DB에 존재하는 모든 테이블 목록을 조회합니다. 새로운 테이블이 추가되었는지 확인할 때 사용하세요.",
+    "DB의 전체 테이블 목록을 확인합니다.",
     {},
     async () => {
-      console.log('🔎 [디버깅] 테이블 목록 스캔 중...');
+      console.log('🔎 [로그] 테이블 목록 스캔');
       try {
         const query = "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'";
         const result = await pool.query(query);
         return { content: [{ type: "text", text: JSON.stringify(result.rows, null, 2) }] };
       } catch (error) {
-        return { content: [{ type: "text", text: `테이블 조회 에러: ${error.message}` }] };
+        return { content: [{ type: "text", text: `에러: ${error.message}` }] };
       }
     }
   );
 
-  // [도구 2] 테이블 구조 확인
+  // [도구 2] 테이블 구조 확인 (매핑 관계 파악용)
   server.tool(
     "get_table_schema",
-    "특정 테이블의 컬럼명과 데이터 타입을 확인합니다. 쿼리 작성 전 필수 단계입니다.",
+    "특정 테이블의 컬럼 구성을 확인합니다. JOIN 쿼리 작성 전 필수 단계입니다.",
     { tableName: z.string().describe("구조를 확인할 테이블 이름") },
     async ({ tableName }) => {
-      console.log(`🔎 [디버깅] '${tableName}' 테이블 구조 파악 중...`);
+      console.log(`🔎 [로그] '${tableName}' 스키마 조회`);
       try {
         const query = "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1";
         const result = await pool.query(query, [tableName]);
         return { content: [{ type: "text", text: JSON.stringify(result.rows, null, 2) }] };
       } catch (error) {
-        return { content: [{ type: "text", text: `구조 조회 에러: ${error.message}` }] };
+        return { content: [{ type: "text", text: `에러: ${error.message}` }] };
       }
     }
   );
 
-  // [도구 3] 안전한 쿼리 실행 (WITH/SELECT 허용)
+  // [도구 3] 데이터 조회 (SELECT/WITH)
   server.tool(
     "run_select_query",
-    "데이터 조회를 위한 SQL(SELECT/WITH)을 실행합니다. V2 제품 필터링이나 메일 요약 시 사용하세요.",
-    { sql_query: z.string().describe("실행할 SQL 쿼리문") },
+    "SQL 조회를 실행합니다. product_mapping 테이블을 JOIN하여 공식 명칭을 가져올 때 사용하세요.",
+    { sql_query: z.string().describe("실행할 SELECT/WITH 쿼리문") },
     async ({ sql_query }) => {
-      console.log(`🚀 [디버깅] 쿼리 실행 요청:\n${sql_query}`);
+      console.log(`🚀 [로그] 쿼리 실행:\n${sql_query}`);
       try {
-        const upperQuery = sql_query.trim().toUpperCase();
-        
-        // 보안 필터: SELECT/WITH로 시작하는지 검사
-        if (!upperQuery.startsWith("SELECT") && !upperQuery.startsWith("WITH")) {
-          return { content: [{ type: "text", text: "보안 에러: SELECT 또는 WITH 구문만 사용할 수 있습니다." }] };
+        const upper = sql_query.trim().toUpperCase();
+        if (!upper.startsWith("SELECT") && !upper.startsWith("WITH")) {
+          return { content: [{ type: "text", text: "보안 에러: 조회를 위한 SELECT/WITH 문만 허용됩니다." }] };
         }
 
-        // 위험 명령어 차단
         const forbidden = /\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE)\b/i;
         if (forbidden.test(sql_query)) {
-          return { content: [{ type: "text", text: "보안 에러: 데이터 훼손 명령어가 감지되었습니다." }] };
+          return { content: [{ type: "text", text: "보안 에러: 데이터 변경 명령어가 감지되었습니다." }] };
         }
 
         const result = await pool.query(sql_query);
-        console.log(`✅ [디버깅] 쿼리 결과: ${result.rowCount}건 반환`);
+        console.log(`✅ [로그] ${result.rowCount}건 반환`);
         return { content: [{ type: "text", text: JSON.stringify(result.rows, null, 2) }] };
       } catch (error) {
-        console.error('❌ [디버깅] 쿼리 실행 실패:', error.message);
-        return { content: [{ type: "text", text: `SQL 실행 에러: ${error.message}` }] };
+        console.error('❌ [로그] SQL 에러:', error.message);
+        return { content: [{ type: "text", text: `에러: ${error.message}` }] };
       }
     }
   );
@@ -117,31 +114,31 @@ function createMcpServer() {
 const transports = {}; 
 
 async function mcpPostHandler(req, res) {
-  const sessionIdFromHeader = req.headers["mcp-session-id"]; 
+  const sid = req.headers["mcp-session-id"]; 
   let transport;
 
-  if (sessionIdFromHeader && transports[sessionIdFromHeader]) {
-    transport = transports[sessionIdFromHeader];
-  } else if (!sessionIdFromHeader && isInitializeRequest(req.body)) {
+  if (sid && transports[sid]) {
+    transport = transports[sid];
+  } else if (!sid && isInitializeRequest(req.body)) {
     transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (newSessionId) => {
-        transports[newSessionId] = transport;
-        console.log(`✅ [연결] 새 세션 시작: ${newSessionId}`);
+      onsessioninitialized: (newSid) => {
+        transports[newSid] = transport;
+        console.log(`✅ [세션] 시작: ${newSid}`);
       },
     });
 
     transport.onclose = () => {
       if (transport.sessionId) {
         delete transports[transport.sessionId];
-        console.log(`🔌 [종료] 세션 닫힘: ${transport.sessionId}`);
+        console.log(`🔌 [세션] 종료: ${transport.sessionId}`);
       }
     };
 
     const server = createMcpServer();
     await server.connect(transport);
   } else {
-    res.status(400).json({ error: "Invalid session" });
+    res.status(400).json({ error: "Invalid Session" });
     return;
   }
 
@@ -156,4 +153,4 @@ app.get("/mcp", (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`🚀 MCP 서버 Ready (Port: ${PORT})`));
+app.listen(PORT, () => console.log(`🚀 MCP 서버 구동 중 (Port: ${PORT})`));
