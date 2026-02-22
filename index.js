@@ -7,9 +7,13 @@ import pg from 'pg';
 const app = express();
 const { Pool } = pg;
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-});
+// DB 연결 에러로 서버 전체가 죽는 것을 방지
+let pool;
+try {
+  pool = new Pool({ connectionString: process.env.DATABASE_URL });
+} catch (err) {
+  console.error('DB 연결 설정 에러:', err);
+}
 
 const server = new McpServer({
   name: 'dcurvin-ai-bridge',
@@ -24,58 +28,45 @@ server.tool(
   },
   async ({ limit }) => {
     try {
+      if (!pool) throw new Error('DB가 연결되지 않았습니다.');
       const query = 'SELECT * FROM orders WHERE channel = $1 LIMIT $2';
       const result = await pool.query(query, ['11st', limit]);
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result.rows, null, 2) }],
-      };
+      return { content: [{ type: 'text', text: JSON.stringify(result.rows, null, 2) }] };
     } catch (error) {
-      return {
-        content: [{ type: 'text', text: `DB 조회 중 에러가 발생했습니다: ${error.message}` }],
-      };
+      return { content: [{ type: 'text', text: `DB 에러: ${error.message}` }] };
     }
   }
 );
 
-// 🚨 연결된 통로들을 안전하게 보관하는 명부
 const transports = new Map();
 
-// 1. n8n이 처음 인사(GET)하러 오는 문
-app.get('/mcp', async (req, res) => {
-  console.log('✅ n8n GET 요청 수신!');
-  // Railway 클라우드 환경에서 데이터가 막히지 않게 필수 설정
+// 🌟 핵심 1: n8n이 처음 인사하러 올 때 무조건 받아주는 '블랙홀 GET'
+app.get('/*', async (req, res) => {
+  console.log(`[연결 수신] n8n이 ${req.path} 경로로 접속했습니다.`);
   res.setHeader('X-Accel-Buffering', 'no');
-
-  // n8n이 접속할 때마다 고유한 출입증(세션 ID) 발급
+  
   const sessionId = Math.random().toString(36).substring(2);
   
-  // n8n에게 "앞으로 데이터는 /mcp?sessionId=출입증번호 여기로 보내!" 라고 지시합니다.
-  const transport = new SSEServerTransport(`/mcp?sessionId=${sessionId}`, res);
-  
+  // n8n에게 "앞으로 데이터는 /message?sessionId=... 로 보내!" 라고 지시
+  const transport = new SSEServerTransport(`/message?sessionId=${sessionId}`, res);
   transports.set(sessionId, transport);
-  await server.connect(transport);
   
-  req.on('close', () => {
-    transports.delete(sessionId);
-    console.log(`[연결 종료] 세션 ${sessionId} 폐기`);
-  });
+  await server.connect(transport);
 });
 
-// 2. n8n이 데이터를 밀어넣는(POST) 문 (주소를 완전히 똑같이 맞췄습니다)
-app.post('/mcp', async (req, res) => {
-  console.log('✅ n8n POST 요청 수신!');
+// 🌟 핵심 2: n8n이 데이터를 보낼 때 무조건 받아주는 '블랙홀 POST'
+app.post('/*', async (req, res) => {
   const sessionId = req.query.sessionId;
   const transport = transports.get(sessionId);
-
+  
   if (transport) {
     await transport.handlePostMessage(req, res);
   } else {
-    // 서버가 재시작되어 명부가 없으면 n8n에게 다시 접속하라고 알려줍니다.
-    res.status(400).send('세션이 만료되었습니다. n8n 워크플로우를 새로고침 하세요.');
+    res.status(404).send('세션 없음. 새로고침 요망');
   }
 });
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log(`🚀 MCP 서버가 포트 ${PORT}에서 돌아가고 있습니다!`);
+  console.log(`🚀 MCP 서버 구동 완료 (포트 ${PORT})`);
 });
