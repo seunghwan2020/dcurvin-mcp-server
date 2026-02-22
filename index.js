@@ -11,7 +11,7 @@ import pg from "pg";
 const app = express();
 app.set("trust proxy", 1);
 
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "5mb" })); // 이메일 등 긴 텍스트를 위해 용량을 5mb로 넉넉히 늘렸습니다.
 app.use(
   cors({
     origin: "*",
@@ -19,79 +19,83 @@ app.use(
   })
 );
 
-// 헬스체크
 app.get("/", (req, res) => res.status(200).send("ok"));
 
 /** ---------------------------
- * 1. DB 연결 설정 및 디버깅
+ * 1. DB 연결 설정
  * -------------------------- */
 const { Pool } = pg;
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
-// 서버가 켜질 때 DB 연결이 정상인지 테스트합니다.
 pool.query('SELECT NOW()', (err, res) => {
-  if (err) {
-    console.error('❌ [디버깅] DB 초기 연결 실패! DATABASE_URL을 확인하세요:', err.message);
-  } else {
-    console.log('✅ [디버깅] PostgreSQL DB 연결 성공! (현재 시간:', res.rows[0].now, ')');
-  }
+  if (err) console.error('❌ DB 초기 연결 실패:', err.message);
+  else console.log('✅ PostgreSQL DB 연결 성공!');
 });
 
 /** ---------------------------
- * 2. MCP 서버 및 도구(Tools) 생성
+ * 2. 만능 MCP 서버 도구 (마스터키)
  * -------------------------- */
 function createMcpServer() {
   const server = new McpServer({
-    name: "dcurvin-ai-bridge",
-    version: "1.0.0",
+    name: "dcurvin-db-master",
+    version: "2.0.0",
   });
 
-  // 🛠️ 디버깅 도구: 현재 DB에 있는 진짜 테이블 이름 스캔
+  // [만능 도구 1] DB에 있는 모든 테이블 이름 확인
   server.tool(
-    "list_database_tables",
-    "PostgreSQL DB에 존재하는 모든 테이블 목록을 조회합니다. 테이블을 찾을 수 없다는 에러가 날 때 가장 먼저 이 도구를 사용하세요.",
+    "list_tables",
+    "PostgreSQL DB에 존재하는 모든 테이블 이름을 조회합니다. 어떤 데이터를 찾아야 할지 모를 때 먼저 이 도구로 테이블 목록을 확인하세요.",
     {},
     async () => {
-      console.log('🔎 [디버깅] AI가 테이블 목록 스캔(list_database_tables)을 요청했습니다.');
       try {
         const query = "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'";
         const result = await pool.query(query);
-        console.log(`✅ [디버깅] 찾은 테이블 목록: ${result.rows.map(r => r.table_name).join(', ')}`);
-        return {
-          content: [{ type: "text", text: JSON.stringify(result.rows, null, 2) }],
-        };
+        return { content: [{ type: "text", text: JSON.stringify(result.rows, null, 2) }] };
       } catch (error) {
-        console.error('❌ [디버깅] 테이블 목록 조회 실패:', error.message);
-        return {
-          content: [{ type: "text", text: `테이블 목록 조회 에러: ${error.message}` }],
-        };
+        return { content: [{ type: "text", text: `테이블 조회 에러: ${error.message}` }] };
       }
     }
   );
 
-  // 📦 메인 도구: 11번가 재고 조회
+  // [만능 도구 2] 특정 테이블의 컬럼(열) 구조 확인
   server.tool(
-    "get_11st_orders",
-    "11번가 채널의 최근 재고 내역을 가져옵니다. 주의: 만약 inventory_11st 테이블이 없다고 나오면 먼저 list_database_tables 도구를 써서 진짜 테이블 이름을 확인하세요.",
+    "get_table_schema",
+    "특정 테이블에 어떤 컬럼(데이터 종류)들이 있는지 구조를 확인합니다. SQL 쿼리를 작성하기 전에 반드시 이 도구로 컬럼 이름을 확인하세요.",
     {
-      limit: z.number().default(5).describe("가져올 데이터 건수 (기본 5건)"),
+      tableName: z.string().describe("구조를 확인할 테이블 이름 (예: emails, inventory_11st, ezadmin_stock)"),
     },
-    async ({ limit }) => {
-      console.log(`🔎 [디버깅] AI가 11번가 재고 스캔(get_11st_orders)을 요청했습니다. (제한: ${limit}건)`);
+    async ({ tableName }) => {
       try {
-        const query = "SELECT * FROM inventory_11st ORDER BY fetched_date DESC, fetched_time DESC LIMIT $1";
-        const result = await pool.query(query, [limit]);
-        console.log(`✅ [디버깅] 11번가 데이터 조회 성공! (${result.rowCount}건 반환)`);
-        return {
-          content: [{ type: "text", text: JSON.stringify(result.rows, null, 2) }],
-        };
+        const query = "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1";
+        const result = await pool.query(query, [tableName]);
+        return { content: [{ type: "text", text: JSON.stringify(result.rows, null, 2) }] };
       } catch (error) {
-        console.error('❌ [디버깅] 11번가 데이터 조회 실패:', error.message);
-        return {
-          content: [{ type: "text", text: `DB 조회 중 에러가 발생했습니다: ${error.message}` }],
-        };
+        return { content: [{ type: "text", text: `컬럼 구조 조회 에러: ${error.message}` }] };
+      }
+    }
+  );
+
+  // [만능 도구 3] AI가 직접 작성한 SELECT 쿼리 실행 (읽기 전용 안전장치 포함)
+  server.tool(
+    "run_select_query",
+    "데이터를 가져오기 위해 직접 작성한 SQL SELECT 쿼리를 실행합니다. 복잡한 필터링이나 요약이 필요할 때 사용하세요. 반드시 SELECT 문만 사용해야 합니다.",
+    {
+      sql_query: z.string().describe("실행할 SQL SELECT 쿼리문 (예: SELECT * FROM emails ORDER BY date DESC LIMIT 5)"),
+    },
+    async ({ sql_query }) => {
+      try {
+        // 🚨 안전장치: SELECT로 시작하지 않는 위험한 명령어(DELETE, UPDATE 등)는 차단합니다.
+        const upperQuery = sql_query.trim().toUpperCase();
+        if (!upperQuery.startsWith("SELECT")) {
+          return { content: [{ type: "text", text: "보안 에러: 안전을 위해 오직 SELECT 명령어만 실행할 수 있습니다." }] };
+        }
+
+        const result = await pool.query(sql_query);
+        return { content: [{ type: "text", text: JSON.stringify(result.rows, null, 2) }] };
+      } catch (error) {
+        return { content: [{ type: "text", text: `SQL 쿼리 실행 에러: ${error.message}` }] };
       }
     }
   );
@@ -100,7 +104,7 @@ function createMcpServer() {
 }
 
 /** ---------------------------
- * 3. n8n 통신 (Streamable HTTP) 처리
+ * 3. n8n 통신 (Streamable HTTP)
  * -------------------------- */
 const transports = {}; 
 
@@ -115,25 +119,21 @@ async function mcpPostHandler(req, res) {
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (newSessionId) => {
         transports[newSessionId] = transport;
-        console.log(`✅ [MCP 통신] 새로운 n8n 세션 연결됨: ${newSessionId}`);
+        console.log(`✅ [연결됨] 세션 ID: ${newSessionId}`);
       },
     });
 
     transport.onclose = () => {
       if (transport.sessionId) {
         delete transports[transport.sessionId];
-        console.log(`🔌 [MCP 통신] n8n 세션 종료됨: ${transport.sessionId}`);
+        console.log(`🔌 [종료됨] 세션 ID: ${transport.sessionId}`);
       }
     };
 
     const server = createMcpServer();
     await server.connect(transport);
   } else {
-    res.status(400).json({
-      jsonrpc: "2.0",
-      error: { code: -32000, message: "Bad Request: No valid session ID provided" },
-      id: null,
-    });
+    res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "No valid session ID" }, id: null });
     return;
   }
 
@@ -143,11 +143,10 @@ async function mcpPostHandler(req, res) {
 async function handleSessionRequest(req, res) {
   const sessionId = req.headers["mcp-session-id"];
   if (!sessionId || !transports[sessionId]) {
-    res.status(400).send("Invalid or missing session ID");
+    res.status(400).send("Invalid session ID");
     return;
   }
-  const transport = transports[sessionId];
-  await transport.handleRequest(req, res);
+  await transports[sessionId].handleRequest(req, res);
 }
 
 app.post("/mcp", mcpPostHandler);
@@ -156,5 +155,5 @@ app.delete("/mcp", handleSessionRequest);
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log(`🚀 MCP 서버 구동 완료 (포트: ${PORT})`);
+  console.log(`🚀 만능 DB 에이전트 MCP 서버 구동 완료 (포트: ${PORT})`);
 });
