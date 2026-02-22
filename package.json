@@ -1,0 +1,16 @@
+{
+  "name": "dcurvin-mcp-server",
+  "version": "1.0.0",
+  "description": "n8n AI 에이전트를 위한 MCP 서버",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.1",
+    "express": "^4.21.0",
+    "pg": "^8.13.0",
+    "zod": "^3.23.8"
+  }
+}
